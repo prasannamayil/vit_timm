@@ -1,1 +1,1 @@
-from .timm_v2 import *
+from .timm import *
