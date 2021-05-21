@@ -133,7 +133,7 @@ default_cfgs = {
 
 
 class Attention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., num_scales=1, attn_stats=False):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., num_scales=1, attn_stats=False, rw_attn=None, rw_coeff=None):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
@@ -141,6 +141,7 @@ class Attention(nn.Module):
 
         self.num_scales = num_scales
         self.attn_stats = attn_stats
+        self.rw_attn = rw_attn
 
         ## Saving these stats for each attention module
         if self.attn_stats:
@@ -149,6 +150,26 @@ class Attention(nn.Module):
             self.v_val = None
             self.out_val = None
             self.attn_weights = None
+
+        ## reweighting attention (196/num_tokens need rework so that this works for any model)
+        if rw_attn == 'standard':
+            dim_rw = num_tokens = 196
+            dim_rw += 1
+            for i in range(num_scales-1): dim_rw += num_tokens/(4**(i+1))
+            dim_rw = int(dim_rw)
+
+            self.reweighting_matrix = torch.nn.Parameter(torch.ones(dim_rw, dim_rw))
+            self.reweighting_matrix.requires_grad = False
+
+
+            start_dim = num_tokens+1
+            for i in range(num_scales-1):
+                end_dim = int(start_dim+(num_tokens/(4**(i+1))))
+                self.reweighting_matrix[:,start_dim:end_dim] = rw_coeff**(i+1)
+                start_dim = end_dim
+        elif rw_attn == 'heirarchical':
+
+            print("will code in a bit")
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
@@ -168,6 +189,12 @@ class Attention(nn.Module):
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
+
+        ## Reweighting attention
+        if self.rw_attn is not None:
+            attn = attn*self.reweighting_matrix ## Softmax before because of some numerical instability issue
+            attn = attn/torch.sum(attn, dim = -1, keepdim=True)
+
         attn = self.attn_drop(attn)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
@@ -185,11 +212,11 @@ class Attention(nn.Module):
 class Block(nn.Module):
 
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, num_scales=1, attn_stats=False):
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, num_scales=1, attn_stats=False, rw_attn=None, rw_coeff=None):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Attention(
-            dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop, num_scales=num_scales, attn_stats=attn_stats)
+            dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop, num_scales=num_scales, attn_stats=attn_stats, rw_attn=rw_attn, rw_coeff=rw_coeff)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -215,7 +242,7 @@ class VisionTransformer(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=True, qk_scale=None, representation_size=None, distilled=False,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0., embed_layer=PatchEmbed, norm_layer=None,
-                 act_layer=None, weight_init='', num_scales=1, attn_stats=False):
+                 act_layer=None, weight_init='', num_scales=1, attn_stats=False, rw_attn=None, rw_coeff=None):
         """
         Args:
             img_size (int, tuple): input image size
@@ -269,7 +296,7 @@ class VisionTransformer(nn.Module):
         self.blocks = nn.Sequential(*[
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
-                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer, num_scales=num_scales, attn_stats=attn_stats)
+                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer, num_scales=num_scales, attn_stats=attn_stats, rw_attn=rw_attn, rw_coeff=rw_coeff)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
 
