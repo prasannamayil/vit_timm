@@ -2,6 +2,10 @@
 
 Hacked together by / Copyright 2020 Ross Wightman
 """
+
+""" Edit made by me: pretrained_strict = False (that's pretty much it)
+
+"""
 import logging
 import os
 import math
@@ -390,7 +394,7 @@ def build_model_with_cfg(
         default_cfg: dict,
         model_cfg: Optional[Any] = None,
         feature_cfg: Optional[dict] = None,
-        pretrained_strict: bool = True,
+        pretrained_strict: bool = False,
         pretrained_filter_fn: Optional[Callable] = None,
         pretrained_custom_load: bool = False,
         kwargs_filter: Optional[Tuple[str]] = None,
