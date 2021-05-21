@@ -27,10 +27,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from timm_v2.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from .helpers import build_model_with_cfg, overlay_external_default_cfg
 from .layers import PatchEmbed, Mlp, DropPath, trunc_normal_, lecun_normal_
 from .registry import register_model
+import numpy as np
 
 _logger = logging.getLogger(__name__)
 
@@ -155,19 +156,20 @@ class Attention(nn.Module):
         if rw_attn == 'standard':
             dim_rw = num_tokens = 196
             dim_rw += 1
-            for i in range(num_scales-1): dim_rw += num_tokens/(4**(i+1))
-            dim_rw = int(dim_rw)
+
+            num_tokens_sqrt = np.sqrt(num_tokens)
+            for i in range(num_scales-1): dim_rw += int(num_tokens_sqrt/(2**(i+1)))*int(num_tokens_sqrt/(2**(i+1)))  ## each row should be integerized
 
             self.reweighting_matrix = torch.nn.Parameter(torch.ones(dim_rw, dim_rw))
             self.reweighting_matrix.requires_grad = False
 
-
             start_dim = num_tokens+1
             for i in range(num_scales-1):
-                end_dim = int(start_dim+(num_tokens/(4**(i+1))))
-                self.reweighting_matrix[:,start_dim:end_dim] = rw_coeff**(i+1)
+                dim_length = int(num_tokens_sqrt/(2**(i+1)))*int(num_tokens_sqrt/(2**(i+1)))
+                end_dim = int(start_dim+dim_length)
+                self.reweighting_matrix[:, start_dim:end_dim] = rw_coeff**(i+1)
                 start_dim = end_dim
-        elif rw_attn == 'heirarchical':
+        elif rw_attn == 'hierarchical':
 
             print("will code in a bit")
 
