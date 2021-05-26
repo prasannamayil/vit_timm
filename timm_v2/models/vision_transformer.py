@@ -356,10 +356,14 @@ class VisionTransformer(nn.Module):
         emb = self.patch_embed(x)
         cls_token = self.cls_token.expand(emb.shape[0], -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
 
+        emb = [emb]
         ## higher scale embeddings
         for i in range(self.num_scales-1):
             new_emb = self.patch_embed(self.embedding_higher_scales[str(i+1)](x))
-            emb = torch.cat([emb, new_emb], dim=1) ## keep concatenating them
+            #emb = torch.cat([emb, new_emb], dim=1) ## keep concatenating them
+            emb.append(new_emb)
+
+        emb = torch.cat(emb, dim=1)
 
         # prepend class token
         x = torch.cat((cls_token, emb), dim=1)
