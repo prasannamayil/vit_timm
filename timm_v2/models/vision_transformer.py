@@ -175,7 +175,7 @@ class Attention(nn.Module):
                 start_dim = end_dim
         elif rw_attn == 'hierarchical':
             rw_matrix = hierarchical_reweighting_matrix(num_scales, rw_coeff=rw_coeff)
-            self.reweighting_matrix = torch.nn.Parameter(torch.tensor(rw_matrix))
+            self.reweighting_matrix = torch.nn.Parameter(torch.Tensor(rw_matrix))
 
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
