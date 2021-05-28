@@ -134,7 +134,11 @@ default_cfgs = {
 
 
 class Attention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., num_scales=1, attn_stats=False, rw_attn=None, rw_coeff=None):
+    """
+    multiscale only works for DeiT tiny. For other models need to pass in model specs (embed_dim, num_tokens, heads etc.)
+    as arguments and edit code chunks and functions accordingly.
+    """
+    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., num_scales=1, attn_stats=False, rw_attn=None, rw_coeff=1):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
@@ -154,7 +158,7 @@ class Attention(nn.Module):
 
         ## reweighting attention (196/num_tokens need rework so that this works for any model)
         if rw_attn == 'standard':
-            dim_rw = num_tokens = 196
+            dim_rw = num_tokens = 196 # Ugly
             dim_rw += 1
 
             num_tokens_sqrt = np.sqrt(num_tokens)
@@ -170,8 +174,9 @@ class Attention(nn.Module):
                 self.reweighting_matrix[:, start_dim:end_dim] = rw_coeff**(i+1)
                 start_dim = end_dim
         elif rw_attn == 'hierarchical':
+            rw_matrix = hierarchical_reweighting_matrix(num_scales, rw_coeff=rw_coeff)
+            self.reweighting_matrix = torch.nn.Parameter(torch.tensor(rw_matrix))
 
-            print("will code in a bit")
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
@@ -195,7 +200,7 @@ class Attention(nn.Module):
         ## Reweighting attention
         if self.rw_attn is not None:
             attn = attn*self.reweighting_matrix ## Softmax before because of some numerical instability issue
-            attn = attn/torch.sum(attn, dim = -1, keepdim=True)
+            attn = attn/torch.sum(attn, dim=-1, keepdim=True)
 
         attn = self.attn_drop(attn)
 
@@ -244,7 +249,7 @@ class VisionTransformer(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=True, qk_scale=None, representation_size=None, distilled=False,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0., embed_layer=PatchEmbed, norm_layer=None,
-                 act_layer=None, weight_init='', num_scales=1, attn_stats=False, rw_attn=None, rw_coeff=None):
+                 act_layer=None, weight_init='', num_scales=1, attn_stats=False, rw_attn=None, rw_coeff=1):
         """
         Args:
             img_size (int, tuple): input image size
@@ -360,7 +365,6 @@ class VisionTransformer(nn.Module):
         ## higher scale embeddings
         for i in range(self.num_scales-1):
             new_emb = self.patch_embed(self.embedding_higher_scales[str(i+1)](x))
-            #emb = torch.cat([emb, new_emb], dim=1) ## keep concatenating them
             emb.append(new_emb)
 
         emb = torch.cat(emb, dim=1)
@@ -747,3 +751,67 @@ def vit_base_patch16_224_miil(pretrained=False, **kwargs):
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, qkv_bias=False, **kwargs)
     model = _create_vision_transformer('vit_base_patch16_224_miil', pretrained=pretrained, **model_kwargs)
     return model
+
+### My function
+
+def hierarchical_reweighting_matrix(num_scales, num_tokens=196, kernel_size=2, rw_coeff=1, print_loc=False):
+    dim_rw = num_tokens
+    dim_rw += 1
+    num_tokens_sqrt = np.sqrt(num_tokens)
+
+    for i in range(num_scales - 1): dim_rw += int(num_tokens_sqrt / (2 ** (i + 1))) * int(
+        num_tokens_sqrt / (2 ** (i + 1)))  ## each row should be integerized
+
+    rw_matrix = np.zeros((dim_rw, dim_rw))  ## initialize the reweighting matrix
+
+    #### Populate self attention within scale and class token attention
+
+    ## scale 1 self attention
+
+    dim_start = 1
+    dim_end = num_tokens + 1
+    rw_matrix[dim_start:dim_end, dim_start:dim_end] = 1
+
+    dim_start = dim_end
+    new_scale_tokens = int(num_tokens_sqrt) * int(num_tokens_sqrt)
+
+    ## Other scales self attention
+    for i in range(num_scales - 1):
+        scale = i + 2
+        new_scale_tokens = int(num_tokens_sqrt / (2 ** (i + 1))) * int(num_tokens_sqrt / (2 ** (i + 1)))
+        dim_end += new_scale_tokens
+        rw_matrix[dim_start:dim_end, dim_start:dim_end] = rw_coeff ** (scale - 1)
+        dim_start = dim_end
+
+    ## class_token attending to last scale and vice versa
+    rw_matrix[0, -new_scale_tokens:] = rw_coeff ** (scale - 1)
+    rw_matrix[-new_scale_tokens:, 0] = rw_coeff ** (scale - 1)
+    rw_matrix[0, 0] = 1  # token self attention (here should coefficient be something else?)
+
+    #### Cross attention between scales (aka dealing with reshaping madness)
+
+    length_scale = 0
+    prev_scale_start_loc = 0
+    current_scale_start_loc = num_tokens
+    for i in range(num_scales - 1):
+        scale = i + 2
+        current_scale_start_loc += length_scale
+        length_scale = int(num_tokens_sqrt / (kernel_size ** (i + 1))) * int(num_tokens_sqrt / (kernel_size ** (i + 1)))
+
+        num_patch_row = int(num_tokens_sqrt / (kernel_size ** (i)))  ## Previous scale num_patches
+        threshold = num_patch_row // kernel_size
+        reminder = num_patch_row % kernel_size
+        for j in range(length_scale):
+            x = j * kernel_size + (j // threshold) * (num_patch_row + reminder)
+
+            loc_current_emb = j + current_scale_start_loc + 1
+            locs_array = prev_scale_start_loc + np.array([x, x + 1, x + num_patch_row, x + num_patch_row + 1]) + 1
+
+            rw_matrix[loc_current_emb, locs_array] = rw_coeff ** (scale - 2)
+            rw_matrix[locs_array, loc_current_emb] = rw_coeff ** (scale - 1)
+            if print_loc:
+                print(f"curr loc = {loc_current_emb}, locs array = {locs_array}")
+
+        prev_scale_start_loc = current_scale_start_loc
+
+    return rw_matrix
